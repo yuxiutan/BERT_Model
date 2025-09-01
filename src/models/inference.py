@@ -32,32 +32,40 @@ class ModelInference:
         try:
             logger.info("正在初始化模型推論器...")
             
-            # 檢查是否存在訓練好的模型
-            model_dir = settings.MODEL_DIR
-            if not (model_dir / "config.json").exists():
-                logger.warning("未找到訓練好的模型，開始初始訓練...")
-                from .trainer import ModelTrainer
-                trainer = ModelTrainer()
-                if not trainer.initial_training():
-                    raise Exception("初始訓練失敗")
-            
             # 載入tokenizer和BERT模型
             self.tokenizer = BertTokenizer.from_pretrained(settings.MODEL_NAME)
             self.bert_model = BertModel.from_pretrained(settings.MODEL_NAME)
             self.bert_model.eval()
             
-            # 載入分類模型
-            self.model = BertForSequenceClassification.from_pretrained(str(model_dir))
-            self.model.eval()
+            # 檢查是否存在預訓練模型
+            model_dir = settings.MODEL_DIR
+            if (model_dir / "config.json").exists():
+                logger.info("發現現有模型，正在載入...")
+                # 載入現有的分類模型
+                self.model = BertForSequenceClassification.from_pretrained(str(model_dir))
+                self.model.eval()
+                logger.info("現有模型載入成功")
+            else:
+                logger.info("未發現現有模型，將使用預設BERT進行推論")
+                # 如果沒有預訓練模型，初始化一個基本的分類模型
+                self.model = BertForSequenceClassification.from_pretrained(
+                    settings.MODEL_NAME,
+                    num_labels=settings.NUM_LABELS,
+                    hidden_dropout_prob=settings.DROPOUT_PROB
+                )
+                self.model.eval()
             
             # 載入參考嵌入向量
             ref_embeddings_file = model_dir / settings.REFERENCE_EMBEDDINGS_FILE
             if ref_embeddings_file.exists():
+                logger.info("載入參考嵌入向量...")
                 with open(ref_embeddings_file, "rb") as f:
                     self.reference_embeddings = pickle.load(f)
+                logger.info("參考嵌入向量載入成功")
             else:
-                logger.warning("參考嵌入向量檔案不存在")
-                self.reference_embeddings = None
+                logger.warning("參考嵌入向量檔案不存在，將在首次使用時生成")
+                # 如果沒有參考嵌入，嘗試從參考資料生成
+                await self._generate_reference_embeddings()
             
             self._initialized = True
             logger.info("模型推論器初始化完成")
@@ -65,6 +73,49 @@ class ModelInference:
         except Exception as e:
             logger.error(f"模型初始化失敗: {e}")
             raise
+    
+    async def _generate_reference_embeddings(self):
+        """從參考資料生成嵌入向量"""
+        try:
+            four_file = settings.REFERENCE_DIR / "attack_chain_FourInOne.json"
+            apt_file = settings.REFERENCE_DIR / "attack_chain_APT29.json"
+            
+            if four_file.exists() and apt_file.exists():
+                logger.info("從參考資料生成嵌入向量...")
+                
+                # 載入參考資料
+                from .preprocessor import DataPreprocessor
+                preprocessor = DataPreprocessor()
+                
+                four_logs = preprocessor.load_logs(four_file)
+                apt_logs = preprocessor.load_logs(apt_file)
+                
+                # 提取特徵序列
+                four_seq = preprocessor.extract_features(four_logs)
+                apt_seq = preprocessor.extract_features(apt_logs)
+                
+                # 生成嵌入向量
+                four_embedding = self.get_embedding(four_seq)
+                apt_embedding = self.get_embedding(apt_seq)
+                
+                # 保存嵌入向量
+                self.reference_embeddings = {
+                    "four_embedding": four_embedding,
+                    "apt_embedding": apt_embedding
+                }
+                
+                ref_embeddings_file = settings.MODEL_DIR / settings.REFERENCE_EMBEDDINGS_FILE
+                with open(ref_embeddings_file, "wb") as f:
+                    pickle.dump(self.reference_embeddings, f)
+                
+                logger.info("參考嵌入向量生成並保存完成")
+            else:
+                logger.warning("參考資料檔案不存在，跳過嵌入向量生成")
+                self.reference_embeddings = None
+                
+        except Exception as e:
+            logger.error(f"生成參考嵌入向量失敗: {e}")
+            self.reference_embeddings = None
     
     def is_ready(self) -> bool:
         """檢查模型是否準備就緒"""
