@@ -38,6 +38,13 @@ async def startup_tasks():
             directory.mkdir(parents=True, exist_ok=True)
             logger.info(f"確保目錄存在: {directory}")
         
+        # 初始化預訓練模型（如果有的話）
+        from models.model_loader import initialize_model_from_pretrained
+        if initialize_model_from_pretrained():
+            logger.info("預訓練模型載入完成")
+        else:
+            logger.info("未使用預訓練模型，系統將在需要時進行初始訓練")
+        
         # 啟動排程器
         start_scheduler()
         logger.info("排程器已啟動")
